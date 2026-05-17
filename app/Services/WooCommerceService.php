@@ -2,52 +2,44 @@
 
 namespace App\Services;
 
-use Illuminate\Support\Facades\Http;
+use Automattic\WooCommerce\Client;
 
 class WooCommerceService
 {
-    protected $baseUrl;
-    protected $consumerKey;
-    protected $consumerSecret;
+    protected ?Client $client = null;
 
-    public function __construct()
+    protected function client(): Client
     {
-        $this->baseUrl = rtrim((string) config('woocommerce.url'), '/');
-        $this->consumerKey = config('woocommerce.consumer_key');
-        $this->consumerSecret = config('woocommerce.consumer_secret');
-    }
+        if ($this->client === null) {
+            $this->client = new Client(
+                rtrim((string) config('woocommerce.url'), '/'),
+                (string) config('woocommerce.consumer_key'),
+                (string) config('woocommerce.consumer_secret'),
+                config('woocommerce.options', []),
+            );
+        }
 
-    protected function apiUrl(string $path): string
-    {
-        return $this->baseUrl . '/' . ltrim($path, '/');
-    }
-
-    protected function request()
-    {
-        return Http::withBasicAuth(
-            $this->consumerKey,
-            $this->consumerSecret
-        )->acceptJson();
+        return $this->client;
     }
 
     public function getProducts($params = [])
     {
-        return $this->request()->get($this->apiUrl('products'), $params);
+        return $this->client()->get('products', $params);
     }
 
     public function createProduct($data)
     {
-        return $this->request()->post($this->apiUrl('products'), $data);
+        return $this->client()->post('products', $data);
     }
 
     public function updateProduct($id, $data)
     {
-        return $this->request()->put($this->apiUrl("products/{$id}"), $data);
+        return $this->client()->put("products/{$id}", $data);
     }
 
     public function deleteProduct($id)
     {
-        return $this->request()->delete($this->apiUrl("products/{$id}"), [
+        return $this->client()->delete("products/{$id}", [
             'force' => true,
         ]);
     }

@@ -8,6 +8,8 @@ use App\Http\Requests\StoreProductRequest;
 use App\Http\Requests\UpdateProductRequest;
 use App\Services\WooCommerceService;
 use Illuminate\Support\Facades\Log;
+use App\Jobs\SyncWooCommerceProduct;
+use Automattic\WooCommerce\HttpClient\HttpClientException;
 
 class WooCommerceController extends Controller
 {
@@ -32,23 +34,22 @@ class WooCommerceController extends Controller
 
             $response = $this->service->getProducts($params);
 
-            if (!$response->successful()) {
-                return response()->json(
-                    [
-                        'status' => 'failure',
-                        'message' => 'Failed to fetch products',
-                    ],
-                    500,
-                );
-            }
-
-            $products = $response->json();
+            $products = is_array($response) ? $response : json_decode(json_encode($response), true);
 
             return response()->json([
                 'status' => 'success',
                 'fetched' => count($products),
                 'products' => $products,
             ]);
+        } catch (HttpClientException $e) {
+            return response()->json(
+                [
+                    'status' => 'failure',
+                    'message' => $e->getMessage(),
+                    'code' => $e->getCode(),
+                ],
+                500,
+            );
         } catch (\Exception $e) {
             return response()->json(
                 [
@@ -78,43 +79,14 @@ class WooCommerceController extends Controller
                     ->toArray(),
             ];
 
-            $response = $this->service->createProduct($data);
 
-            if (!$response->successful()) {
-                $error = $response->json();
-                $isPermissionError = $response->status() === 401 && is_array($error) && ($error['code'] ?? null) === 'woocommerce_rest_cannot_create';
+            // dispatch product creation to background queue
+            SyncWooCommerceProduct::dispatch('create', $data);
 
-                Log::error('WooCommerce Create Failed', [
-                    'status' => $response->status(),
-                    'body' => $response->body(),
-                    'response' => $error,
-                ]);
-
-                return response()->json(
-                    [
-                        'status' => 'failure',
-                        'message' => $isPermissionError ? 'WooCommerce credentials do not have permission to create products. Regenerate the API key with Read/Write access.' : 'Failed to create product',
-                        'error' => $error ?? [
-                            'status' => $response->status(),
-                            'body' => $response->body(),
-                        ],
-                    ],
-                    500,
-                );
-            }
-
-            Log::info('WooCommerce Product Created', [
-                'response' => $response->json(),
-            ]);
-
-            return response()->json(
-                [
-                    'status' => 'success',
-                    'woocommerce_product_id' => $response->json()['id'],
-                    'message' => 'Product created successfully',
-                ],
-                201,
-            );
+            return response()->json([
+                'success' => true,
+                'message' => 'Product queued for creation',
+            ], 202);
         } catch (\Exception $e) {
             Log::error('WooCommerce Exception', [
                 'message' => $e->getMessage(),
@@ -170,27 +142,13 @@ class WooCommerceController extends Controller
                     ->toArray();
             }
 
-            $response = $this->service->updateProduct($id, $data);
-
-            if (!$response->successful()) {
-                return response()->json(
-                    [
-                        'status' => 'failure',
-                        'message' => 'Failed to update product',
-                        'error' => $response->json(),
-                    ],
-                    500,
-                );
-            }
-
-            Log::info('WooCommerce Product Updated', [
-                'product_id' => $id,
-            ]);
+            // dispatch product update to background queue
+            SyncWooCommerceProduct::dispatch('update', $data, $id);
 
             return response()->json([
-                'status' => 'success',
-                'message' => 'Product updated successfully on WooCommerce',
-            ]);
+                'success' => true,
+                'message' => 'Product queued for update',
+            ], 202);
         } catch (\Exception $e) {
             return response()->json(
                 [
@@ -204,17 +162,7 @@ class WooCommerceController extends Controller
     public function destroy($id)
     {
         try {
-            $response = $this->service->deleteProduct($id);
-
-            if (!$response->successful()) {
-                return response()->json(
-                    [
-                        'status' => 'failure',
-                        'message' => 'Failed to delete product',
-                    ],
-                    500,
-                );
-            }
+            $this->service->deleteProduct($id);
 
             Log::info('WooCommerce Product Deleted', [
                 'product_id' => $id,
@@ -224,6 +172,15 @@ class WooCommerceController extends Controller
                 'status' => 'success',
                 'message' => 'Product permanently deleted from WooCommerce.',
             ]);
+        } catch (HttpClientException $e) {
+            return response()->json(
+                [
+                    'status' => 'failure',
+                    'message' => $e->getMessage(),
+                    'code' => $e->getCode(),
+                ],
+                500,
+            );
         } catch (\Exception $e) {
             return response()->json(
                 [
